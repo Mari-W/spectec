@@ -1,0 +1,92 @@
+diff --git a/specification/wasm-2.0/6-typing.spectec b/specification/wasm-2.0/6-typing.spectec
+index 3c5ec0d3e..c61e640f5 100644
+--- a/specification/wasm-2.0/6-typing.spectec
++++ b/specification/wasm-2.0/6-typing.spectec
+@@ -92,10 +92,14 @@ relation Memtype_sub: |- memtype <: memtype          hint(show "S-mem")
+ relation Externtype_sub: |- externtype <: externtype hint(show "S-extern")
+ 
+ 
+-rule Limits_sub:
+-  |- `[n_11 .. n_12] <: `[n_21 .. n_22]
+-  -- if n_11 >= n_21
+-  -- if n_12 <= n_22
++rule Limits_sub/max:
++  |- `[n_1 .. m_1] <: `[n_2 .. m_2?]
++  -- if n_1 >= n_2
++  -- (if m_1 <= m_2)?
++
++rule Limits_sub/eps:
++  |- `[n_1 .. eps] <: `[n_2 .. eps]
++  -- if n_1 >= n_2
+ 
+ rule Functype_sub:
+   |- ft <: ft
+diff --git a/specification/wasm-2.0/8-reduction.spectec b/specification/wasm-2.0/8-reduction.spectec
+index b92804408..a378b9c0d 100644
+--- a/specification/wasm-2.0/8-reduction.spectec
++++ b/specification/wasm-2.0/8-reduction.spectec
+@@ -566,6 +566,7 @@ rule Step/store-num-trap:
+ 
+ rule Step/store-num-val:
+   z; (CONST I32 i) (CONST nt c) (STORE nt ao)  ~>  $with_mem(z, 0, $(i + ao.OFFSET), $($size(nt)/8), b*); eps
++  -- if $(i + ao.OFFSET + $size(nt)/8) <= |$mem(z, 0).BYTES|
+   -- if b* = $nbytes_(nt, c)
+ 
+ rule Step/store-pack-trap:
+@@ -574,6 +575,7 @@ rule Step/store-pack-trap:
+ 
+ rule Step/store-pack-val:
+   z; (CONST I32 i) (CONST Inn c) (STORE Inn n ao)  ~>  $with_mem(z, 0, $(i + ao.OFFSET), $(n/8), b*); eps
++  -- if $(i + ao.OFFSET + n/8) <= |$mem(z, 0).BYTES|
+   -- if b* = $ibytes_(n, $wrap__($size(Inn), n, c))
+ 
+ rule Step/vstore-oob:
+@@ -582,6 +584,7 @@ rule Step/vstore-oob:
+ 
+ rule Step/vstore-val:
+   z; (CONST I32 i) (VCONST V128 c) (VSTORE V128 ao)  ~>  $with_mem(z, 0, $(i + ao.OFFSET), $($size(V128)/8), b*); eps
++  -- if $(i + ao.OFFSET + $size(V128)/8) <= |$mem(z, 0).BYTES|
+   -- if b* = $vbytes_(V128, c)
+ 
+ 
+@@ -591,6 +594,7 @@ rule Step/vstore_lane-oob:
+ 
+ rule Step/vstore_lane-val:
+   z; (CONST I32 i) (VCONST V128 c) (VSTORE_LANE V128 N ao j)  ~>  $with_mem(z, 0, $(i + ao.OFFSET), $(N/8), b*); eps
++  -- if $(i + ao.OFFSET + N) <= |$mem(z, 0).BYTES|
+   -- if N = $jsize(Jnn)  ;; TODO: relate implicitly
+   -- if M = $(128/N)
+   -- if b* = $ibytes_(N, $lanes_(Jnn X M, c)[j])
+diff --git a/specification/wasm-2.0/B-soundness.spectec b/specification/wasm-2.0/B-soundness.spectec
+index 670fdd050..53d4d69f6 100644
+--- a/specification/wasm-2.0/B-soundness.spectec
++++ b/specification/wasm-2.0/B-soundness.spectec
+@@ -84,7 +84,7 @@ rule Instr_ok2/label:
+ rule Instr_ok2/frame:
+   s; C |- FRAME_ n `{f} admininstr* : eps -> t^n
+   -- Frame_ok: s |- f : C'
+-  -- Expr_ok2: s; C' |- admininstr* : t^n
++  -- Expr_ok2: s; {RETURN (t^n)} ++ C' |- admininstr* : t^n
+ 
+ rule Instr_ok2/call_addr:
+   s; C |- CALL_ADDR funcaddr : t_1* -> t_2*
+diff --git a/specification/wasm-3.0/1.2-syntax.types.spectec b/specification/wasm-3.0/1.2-syntax.types.spectec
+index a7855e18d..f2ead08e5 100644
+--- a/specification/wasm-3.0/1.2-syntax.types.spectec
++++ b/specification/wasm-3.0/1.2-syntax.types.spectec
+@@ -491,13 +491,13 @@ def $free_comptype(comptype) : free
+ def $free_subtype(subtype) : free
+ def $free_rectype(rectype) : free
+ 
+-def $free_tagtype(tagtype) : free
++def $free_tagtype(tagtype) : free  hint(partial) 
+ def $free_globaltype(globaltype) : free
+ def $free_memtype(memtype) : free
+ def $free_tabletype(tabletype) : free
+ def $free_datatype(datatype) : free
+ def $free_elemtype(elemtype) : free
+-def $free_externtype(externtype) : free
++def $free_externtype(externtype) : free hint(partial)
+ def $free_moduletype(moduletype) : free
+ 
+ 
