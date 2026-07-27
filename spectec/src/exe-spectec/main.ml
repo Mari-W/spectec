@@ -14,6 +14,7 @@ type target =
  | Splice of Backend_splice.Config.t
  | Interpreter of string list
  | Rocq
+ | Agda
 
 type pass =
   | Sub
@@ -41,7 +42,6 @@ Because passes have dependencies, and because some flags enable multiple
 passers (--all-passes, some targets), we do _not_ want to use the order of
 flags on the command line.
 *)
-let _skip_passes = [ Unthe ]  (* Not clear how to extend them to indexed types *)
 let all_passes = [
   Ite;
   LetIntroMech;
@@ -55,6 +55,7 @@ let all_passes = [
   PatSimp;
   Sub;
   DefToRel;
+  Unthe;
   Sideconditions;
   AliasDemut;
   ImproveIds;
@@ -90,10 +91,6 @@ let print_all_il_to = ref ""
 let print_al = ref false
 let print_al_o = ref ""
 let print_no_pos = ref false
-
-module PS = Set.Make(struct type t = pass let compare = compare; end)
-let selected_passes = ref (PS.empty)
-let enable_pass pass = selected_passes := PS.add pass !selected_passes
 
 let sideconditions_on_defs = ref false
 
@@ -175,6 +172,13 @@ let run_pass : pass -> Il.Ast.script -> Il.Ast.script = function
   | DatatypeDiet -> Middlend.Datatypediet.transform
   | SinglePatternMatch -> Middlend.Singlepatternmatch.transform
 
+module PS = Set.Make(struct type t = pass let compare = compare; end)
+let selected_passes = ref (PS.empty)
+let enable_pass pass =
+  if not (List.mem pass all_passes) then
+      Util.Error.error Util.Source.no_region "pass not in all_passes:" (pass_flag pass);
+  selected_passes := PS.add pass !selected_passes
+
 
 (* Argument parsing - Specific for undep pass *)
 let set_wf_state s =
@@ -239,6 +243,7 @@ let argspec = Arg.align (
   "--interpreter", Arg.Rest_all (fun args -> target := Interpreter args),
     " Generate interpreter";
   "--rocq", Arg.Unit (fun () -> target := Rocq), " Generate Rocq Inductive Definitions";
+  "--agda", Arg.Unit (fun () -> target := Agda), " Generate Agda specification";
   "--debug", Arg.Unit (fun () -> Backend_interpreter.Debugger.debug := true),
     " Debug interpreter";
   "--unified-vars", Arg.Unit (fun () -> Il2al.Unify.rename := false),
@@ -293,7 +298,7 @@ let () =
     (match !target with
     | Prose _ | Splice _ | Interpreter _ ->
       enable_pass Sideconditions;
-    | Rocq -> 
+    | Rocq ->
       enable_pass Sideconditions;
       enable_pass Totalize;
       enable_pass Else;
@@ -309,11 +314,42 @@ let () =
       enable_pass ElseSimp;
       enable_pass PatSimp;
       enable_pass LetIntroMech
+    | Agda ->
+      (* Agda gets the most dependent IL possible: no Undep (indexed types
+         survive), no TypeFamilyRemoval (families become Set-valued
+         functions), no PatSimp (Agda handles forced patterns), no DefToRel
+         (Agda's termination checker handles recursion).
+         Dependent IL also keeps overlapping (catch-all) clauses from
+         totalize; skipping a stuck clause match during evaluation would
+         incorrectly fall through to them. *)
+      Il.Eval.conservative_matches := true;
+      (* Unthe (before Sideconditions) removes !(e) from relation premises via
+         a fresh var + `e = ?(x)` equation. PARTIAL on dependent IL: a scalar
+         !(e) flowing into a type index (e.g. !($size(V128)) as the N of iN(N))
+         would break the index's definitional equality, so unthe.ml's guard
+         skips numeric / no-argument-type-name option elements. That guard is
+         over-broad (also skips safe data-position scalar projections);
+         extending it to true per-use index analysis is future work. Enabled
+         as the scaffolding for that. *)
+      enable_pass Unthe;
+      enable_pass Sideconditions;
+      enable_pass Totalize;
+      enable_pass Else;
+      enable_pass Uncaseremoval;
+      enable_pass Sub;
+      enable_pass SubExpansion;
+      enable_pass ImproveIds;
+      enable_pass AliasDemut;
+      enable_pass Ite;
+      enable_pass ElseSimp;
+      enable_pass LetIntroMech
+
     | _ when !print_al || !print_al_o <> "" ->
       enable_pass Sideconditions;
     | _ -> ()
     );
 
+    let conservative = !Il.Eval.conservative_matches in
     let il =
       List.fold_left (fun il pass ->
         if not (PS.mem pass !selected_passes) then il else
@@ -321,7 +357,11 @@ let () =
           last_pass := pass_flag pass;
           pass_count := !pass_count + 1;
           log ("Running pass " ^ pass_flag pass ^ "...");
+          (* Conservative matching only while transforming; validation wants
+             full reduction. *)
+          Il.Eval.conservative_matches := conservative;
           let il = run_pass pass il in
+          Il.Eval.conservative_matches := false;
           if !print_all_il then print_il il;
           print_il_to !last_pass !pass_count il;
           log ("IL Validation after pass " ^ pass_flag pass ^ "...");
@@ -330,12 +370,13 @@ let () =
         )
       ) il all_passes
     in
+    Il.Eval.conservative_matches := false;
     last_pass := "";
 
     if !print_final_il && not !print_all_il then print_il il;
 
     let al =
-      if not !print_al && !print_al_o = "" && (!target = Check || !target = Ast || !target = Latex || !target = Rocq) then []
+      if not !print_al && !print_al_o = "" && (!target = Check || !target = Ast || !target = Latex || !target = Rocq || !target = Agda) then []
       else (
         log "Translating to AL...";
         let interp = match !target with
@@ -449,10 +490,23 @@ let () =
       log "Rocq Generation...";
       (match !odsts with
       | [] -> print_endline (Backend_rocq.Print.string_of_script il)
-      | [odst] -> 
+      | [odst] ->
         let coq_code = Backend_rocq.Print.string_of_script il in
         let oc = Out_channel.open_text odst in
         Fun.protect (fun () -> Out_channel.output_string oc coq_code)
+          ~finally:(fun () -> Out_channel.close oc)
+      | _ ->
+        prerr_endline "too many output file names";
+        exit 2
+      )
+    | Agda ->
+      log "Agda Generation...";
+      (match !odsts with
+      | [] -> print_endline (Backend_agda.Print.string_of_script il)
+      | [odst] ->
+        let agda_code = Backend_agda.Print.string_of_script il in
+        let oc = Out_channel.open_text odst in
+        Fun.protect (fun () -> Out_channel.output_string oc agda_code)
           ~finally:(fun () -> Out_channel.close oc)
       | _ ->
         prerr_endline "too many output file names";

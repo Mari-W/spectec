@@ -16,6 +16,13 @@ val sub_typ : env -> typ -> typ -> bool
 
 exception Irred (* indicates that argument is not normalised enough to decide *)
 
+(* When set (default), a clause or instance whose match is undecidable is
+   skipped, assuming clauses do not overlap. Unset for pipelines that keep
+   overlapping catch-all clauses (e.g. after totalize on dependent IL). *)
+val assume_coherent_matches : bool ref
+val conservative_matches : bool ref
+val tolerant_cases : bool ref
+
 val match_iter : env -> subst -> iter -> iter -> subst option (* raises Irred *)
 val match_exp : env -> subst -> exp -> exp -> subst option (* raises Irred *)
 val match_typ : env -> subst -> typ -> typ -> subst option (* raises Irred *)

@@ -21,6 +21,12 @@ exception Irred
 
 let assume_coherent_matches = ref true
 
+(* when set, undecidable match stops reduction instead of skipping clause, needed for overlapping catch-alls on dependent IL *)
+let conservative_matches = ref false
+
+(* when set, case with unresolved type kept unreduced instead of erroring *)
+let tolerant_cases = ref false
+
 let (let*) = Option.bind
 
 let ($>) it e = {e with it}
@@ -116,6 +122,7 @@ and reduce_typ_app' env id args at = function
     ) @@ fun _ ->
     match match_list match_arg env Subst.empty args args' with
     | exception Irred ->
+      if !conservative_matches then None else
       if not !assume_coherent_matches then None else
       reduce_typ_app' env id args at (Some (ps, insts'))
     | None -> reduce_typ_app' env id args at (Some (ps, insts'))
@@ -386,11 +393,16 @@ and reduce_exp env e : exp =
     ) $> e
   | CaseE (op, e1) ->
     let e1' = reduce_exp env e1 in
-    let tcs = as_variant_typ env e.note e.at in
-    let _t, _qs, prems = find_typcase tcs op e.at in
-    (match reduce_prems env Subst.empty prems with
-    | Some false -> raise Irred
-    | _ -> CaseE (op, e1') $> e
+    (match
+      let tcs = as_variant_typ env e.note e.at in
+      find_typcase tcs op e.at
+    with
+    | exception exn when !tolerant_cases && exn <> Irred -> CaseE (op, e1') $> e
+    | (_t, _qs, prems) ->
+      (match reduce_prems env Subst.empty prems with
+      | Some false -> raise Irred
+      | _ -> CaseE (op, e1') $> e
+      )
     )
   | CvtE (e1, nt1, nt2) ->
     let e1' = reduce_exp env e1 in
@@ -521,6 +533,7 @@ and reduce_exp_call env id args at = function
     assert (List.for_all (fun a -> Eq.eq_arg a (reduce_arg env a)) args);
     match match_list match_arg env Subst.empty args args' with
     | exception Irred ->
+      if !conservative_matches then None else
       if not !assume_coherent_matches then None else
       reduce_exp_call env id args at clauses'
     | None -> reduce_exp_call env id args at clauses'

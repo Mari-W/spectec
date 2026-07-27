@@ -14,6 +14,28 @@ type env = {
   il_env : Il.Env.t;
 }
 
+(* reduce type to head name, tolerate failure *)
+let reduce_typ_safe env t =
+  (* name resolution wants full reduction *)
+  let c = !Eval.conservative_matches in
+  Eval.conservative_matches := false;
+  Eval.tolerant_cases := true;
+  Fun.protect ~finally:(fun () ->
+    Eval.conservative_matches := c;
+    Eval.tolerant_cases := false)
+    (fun () ->
+      try
+        let t' = Eval.reduce_typ env t in
+        (if Print.string_of_typ_name t' = "lane_" && Sys.getenv_opt "IMPROVEIDS_DEBUG" <> None then
+          Printf.eprintf "[improveids] unresolved: %s ~~> %s\n%!"
+            (Print.string_of_typ t) (Print.string_of_typ t'));
+        t'
+      with exn ->
+        (if Sys.getenv_opt "IMPROVEIDS_DEBUG" <> None then
+          Printf.eprintf "[improveids] reduce failed (%s): %s\n%!"
+            (Printexc.to_string exn) (Print.string_of_typ t));
+        t)
+
 let make_prefix = "mk_"
 let var_prefix = "v_"
 let fun_prefix = "fun_"
@@ -114,30 +136,39 @@ let rec check_iteration_naming e iterexp =
     Eq.eq_id id id' && check_iteration_naming e i
   | _ -> false 
 
-and t_exp env e = 
+and t_exp_pre env e =
+  (* top-down on untransformed nodes, notes resolve against original env *)
   (match e.it with
   | CaseE (m, e1) -> 
-    let id = Print.string_of_typ_name (Eval.reduce_typ env.il_env e.note) in
+    let id = Print.string_of_typ_name (reduce_typ_safe env.il_env e.note) in
     CaseE(transform_mixop env id m, e1)
   | StrE fields -> 
-    let id = Print.string_of_typ_name (Eval.reduce_typ env.il_env e.note) in
+    let id = Print.string_of_typ_name (reduce_typ_safe env.il_env e.note) in
     StrE (List.map (fun (a, e1) -> (transform_atom env id a, e1)) fields)
   | UncaseE (e1, m) -> 
-    let id = Print.string_of_typ_name (Eval.reduce_typ env.il_env e.note) in
+    let id = Print.string_of_typ_name (reduce_typ_safe env.il_env e.note) in
     UncaseE (e1, transform_mixop env id m)
   | DotE (e1, a) -> 
-    let id = Print.string_of_typ_name (Eval.reduce_typ env.il_env e1.note) in
+    let id = Print.string_of_typ_name (reduce_typ_safe env.il_env e1.note) in
     DotE (e1, transform_atom env id a)
+  | exp -> exp
+  ) $$ e.at % e.note
+
+and t_exp env e = 
+  (match e.it with
   (* Special case for iteration naming - just use the variable it is iterating on *)
-  | IterE (e, ((_, [(_, {it = VarE id''; _})]) as iterexp)) when check_iteration_naming e iterexp -> 
+  (* dimensioned iters (ListN) keep annotation, else length link lost *)
+  | IterE (e, ((iter, [(_, {it = VarE id''; _})]) as iterexp))
+    when check_iteration_naming e iterexp &&
+         (match iter with ListN _ -> false | _ -> true) ->
     VarE (t_var_id env id'')
   | exp -> exp
   ) $$ e.at % e.note
 
-and t_path env path = 
+and t_path_pre env path = 
   (match path.it with
   | DotP (p, a) -> 
-    let id = Print.string_of_typ_name (Eval.reduce_typ env.il_env p.note) in
+    let id = Print.string_of_typ_name (reduce_typ_safe env.il_env p.note) in
     DotP (p, transform_atom env id a)
   | p -> p
   ) $$ path.at % path.note
@@ -195,8 +226,9 @@ let transform_hintdef env hintdef =
 
 let rec t_def env def = 
   let tf = { base_transformer with 
+    transform_exp_pre = t_exp_pre env;
+    transform_path_pre = t_path_pre env;
     transform_exp = t_exp env;
-    transform_path = t_path env;
     transform_var_id = t_var_id env;
     transform_typ_id = t_user_def_id env;
     transform_rel_id = t_user_def_id env;

@@ -26,9 +26,10 @@ drop some variables from the iterexp *)
 let update_iterexp_vars (sets : Il.Free.sets) ((iter, vs) : iterexp) : iterexp =
   let vs' = List.filter (fun (v, _) -> Il.Free.Set.mem v.it sets.varid) vs in
   let vs'' = if vs' <> [] then vs' else
-    match iter with
-    | ListN _ -> vs'
-    | _ -> [List.hd vs]  (* prevent empty iterator list *)
+    match iter, vs with
+    | ListN _, _ -> vs'
+    | _, v :: _ -> [v]  (* prevent empty iterator list *)
+    | _, [] -> vs'      (* dependent IL, annotation-style iters have no binders *)
   in (iter, vs'')
 
 (* If a param and premise is generated under an iteration, wrap them accordingly *)
@@ -85,6 +86,12 @@ let rec t_exp n e : eqns * exp =
   (* Descend first using t_exp2, and then see if we have to pull out the current expression *)
   let eqns, e' = t_exp2 n e in
   match e.it with
+  (* GUARD dependent-IL scaffolding (see exe-spectec/main.ml Agda arm), scalar !(e) may flow into a type index, fresh var breaks defeq, skip numeric/no-arg-typename option elems, still drop data projections, over-broad *)
+  | TheE exp when (match exp.note.it with
+      | IterT ({it = NumT _; _}, Opt) -> true
+      | IterT ({it = VarT (_, []); _}, Opt) -> true
+      | _ -> false) ->
+    eqns, e'
   | TheE exp ->
     let ot = exp.note in
     let t = match ot.it with
