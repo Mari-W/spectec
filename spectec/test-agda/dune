@@ -1,0 +1,14 @@
+(rule
+  (targets
+    wasm.agda.act
+  )
+  (action
+    (system "../src/exe-spectec/main.exe ../../../../specification/wasm-3.0/[012345]*.spectec -v -l --agda -o wasm.agda.act")
+  )
+  (deps
+    (file ../src/exe-spectec/main.exe)
+    (glob_files ../specification/wasm-3.0/*)
+  )
+)
+
+(rule (alias runtest) (action (diff wasm3-check.agda wasm.agda.act)))
